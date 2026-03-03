@@ -1,4 +1,4 @@
-name: Build java-cef and Release
+name: Build java-cef (windows-amd64) and Release
 
 on:
   push:
@@ -7,132 +7,63 @@ on:
   workflow_dispatch:  # 保留手动触发能力（Actions页面可手动运行）
 
 jobs:
-  # Linux 平台构建
-  java-cef-linux:
-    runs-on: [ubuntu-24.04]
-    strategy:
-      matrix:
-        platform: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install deps and build
-        run: |
-          sudo apt update
-          sudo apt install build-essential g++ cmake ninja-build openjdk-17-jdk python3 libgtk2.0-dev -y
-          mkdir jcef_build && cd jcef_build
-          cmake -G "Ninja" -DPROJECT_ARCH=${{ matrix.platform }} -DCMAKE_BUILD_TYPE=Release ..
-          ninja -j4
-          mv native/Release linux_${{ matrix.platform }}
-          strip linux_${{ matrix.platform }}/libcef.so
-          python3 ../.github/workflows/scripts/generate_hash.py linux_${{ matrix.platform }}
-          mv linux_${{ matrix.platform }}/.hash ./
-          tar -czf linux_${{ matrix.platform }}.tar.gz linux_${{ matrix.platform }} .hash
-          sha256sum linux_${{ matrix.platform }}.tar.gz > linux_${{ matrix.platform }}.tar.gz.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: 'linux_${{ matrix.platform }}'
-          path: |
-            jcef_build/linux_${{ matrix.platform }}.tar.gz
-            jcef_build/linux_${{ matrix.platform }}.tar.gz.sha256
-          if-no-files-found: error
-
-  # Windows 平台构建
-  java-cef-windows:
+  # 仅保留 windows-amd64 平台构建
+  java-cef-windows-amd64:
     runs-on: [windows-2022]
-    strategy:
-      matrix:
-        platform: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
-      - name: Build
+      - name: Build windows-amd64
         run: |
           mkdir jcef_build && cd jcef_build
-          cmake -G "Ninja" -DPROJECT_ARCH=${{ matrix.platform }} -DCMAKE_BUILD_TYPE=Release ..
+          cmake -G "Ninja" -DPROJECT_ARCH=amd64 -DCMAKE_BUILD_TYPE=Release ..
           ninja -j4
           cd native
-          ren Release windows_${{ matrix.platform }}
+          ren Release windows_amd64
           cd ..
-          move native/windows_${{ matrix.platform }} windows_${{ matrix.platform }}
-          python3 ../.github/workflows/scripts/generate_hash.py windows_${{ matrix.platform }}
-          mv windows_${{ matrix.platform }}/.hash ./
-          tar -czf windows_${{ matrix.platform }}.tar.gz windows_${{ matrix.platform }} .hash
-          Get-FileHash -Algorithm SHA256 -Path "windows_${{ matrix.platform }}.tar.gz" | Out-File "windows_${{ matrix.platform }}.tar.gz.sha256"
+          move native/windows_amd64 windows_amd64
+          python3 ../.github/workflows/scripts/generate_hash.py windows_amd64
+          mv windows_amd64/.hash ./
+          tar -czf windows_amd64.tar.gz windows_amd64 .hash
+          Get-FileHash -Algorithm SHA256 -Path "windows_amd64.tar.gz" | Out-File "windows_amd64.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: 'windows_${{ matrix.platform }}'
+          name: 'windows_amd64'
           path: |
-            jcef_build/windows_${{ matrix.platform }}.tar.gz
-            jcef_build/windows_${{ matrix.platform }}.tar.gz.sha256
+            jcef_build/windows_amd64.tar.gz
+            jcef_build/windows_amd64.tar.gz.sha256
           if-no-files-found: error
 
-  # macOS 平台构建
-  java-cef-macos:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - platform: amd64
-            runner: macos-15-intel
-          - platform: arm64
-            runner: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python 3.9
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-      - run: |
-          brew install ninja
-          brew install coreutils
-          sudo xcode-select -s /Applications/Xcode.app
-          mkdir jcef_build && cd jcef_build
-          cmake -G "Ninja" -DPROJECT_ARCH=${{ matrix.platform }} -DCMAKE_BUILD_TYPE=Release ..
-          ninja -j4
-          mv native/Release macos_${{ matrix.platform }}
-          python3 ../.github/workflows/scripts/generate_hash.py macos_${{ matrix.platform }}
-          mv macos_${{ matrix.platform }}/.hash ./
-          tar -czf macos_${{ matrix.platform }}.tar.gz macos_${{ matrix.platform }} .hash
-          sha256sum macos_${{ matrix.platform }}.tar.gz > macos_${{ matrix.platform }}.tar.gz.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: 'macos_${{ matrix.platform }}'
-          path: |
-            jcef_build/macos_${{ matrix.platform }}.tar.gz
-            jcef_build/macos_${{ matrix.platform }}.tar.gz.sha256
-          if-no-files-found: error
-
-  # 核心：发布所有产物到 GitHub Release
+  # 发布 windows-amd64 产物到 GitHub Release
   release-to-github:
-    needs: [java-cef-linux, java-cef-windows, java-cef-macos]  # 等待所有平台构建完成
+    needs: [java-cef-windows-amd64]  # 仅等待windows-amd64构建完成
     runs-on: ubuntu-24.04
     steps:
-      - name: Download all build artifacts
+      - name: Download windows-amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          path: release_assets  # 所有产物统一下载到release_assets目录
+          name: 'windows_amd64'  # 仅下载windows-amd64产物
 
-      - name: List artifacts (调试用，可删除)
+      - name: List artifact (调试用，可删除)
         run: |
-          echo "=== 已下载的产物列表 ==="
-          ls -l release_assets/
-          echo "========================"
+          echo "=== 已下载的windows-amd64产物 ==="
+          ls -l
+          echo "================================"
 
       - name: Create and publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # 上传所有平台的tar.gz和sha256校验文件
+          # 仅上传windows-amd64的产物
           files: |
-            release_assets/**/*.tar.gz
-            release_assets/**/*.sha256
-          # Release 描述（可自定义）
+            windows_amd64.tar.gz
+            windows_amd64.tar.gz.sha256
+          # Release 描述（适配windows-amd64）
           body: |
-            ## java-cef 自动构建发布
+            ## java-cef (windows-amd64) 自动构建发布
             - 构建Commit: ${{ github.sha }}
             - 构建时间: ${{ github.run_at }}
-            - 支持平台: linux_amd64、linux_arm64、windows_amd64、windows_arm64、macos_amd64、macos_arm64
+            - 支持平台: windows-amd64
           # 是否为预发布版本（false=正式版，true=测试版）
           prerelease: false
         env:
-          # GitHub 内置令牌，无需手动配置
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
