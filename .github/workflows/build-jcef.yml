@@ -1,10 +1,10 @@
-name: Build java-cef (windows-amd64) and Release
+name: Build java-cef (windows-amd64) as JAR and Release
 
 on:
   push:
-    tags:
+    tags:  # 推送v开头的Tag时自动发布Release
       - 'v*'
-  workflow_dispatch:
+  workflow_dispatch:  # 手动触发（仅构建，不发布）
 
 jobs:
   java-cef-windows-amd64:
@@ -12,7 +12,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
-      - name: Build windows-amd64
+      
+      # 1. 安装JDK（确保有jar命令）
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven' # 若用Maven/Gradle可缓存，无则不影响
+      
+      # 2. 原有构建逻辑（生成windows_amd64目录）
+      - name: Build windows-amd64 native files
         run: |
           mkdir jcef_build && cd jcef_build
           cmake -G "Ninja" -DPROJECT_ARCH=amd64 -DCMAKE_BUILD_TYPE=Release ..
@@ -23,50 +33,55 @@ jobs:
           move native/windows_amd64 windows_amd64
           python3 ../.github/workflows/scripts/generate_hash.py windows_amd64
           mv windows_amd64/.hash ./
-          tar -czf windows_amd64.tar.gz windows_amd64 .hash
-          Get-FileHash -Algorithm SHA256 -Path "windows_amd64.tar.gz" | Out-File "windows_amd64.tar.gz.sha256"
+      
+      # 3. 新增：将windows_amd64目录打包为JAR文件
+      - name: Package as JAR file
+        run: |
+          cd jcef_build
+          # 用jar命令打包（c=创建，f=指定文件名，v=详细输出）
+          jar cvf windows_amd64.jar windows_amd64/ .hash
+          # 生成JAR文件的sha256校验（替换原有tar.gz的校验）
+          Get-FileHash -Algorithm SHA256 -Path "windows_amd64.jar" | Out-File "windows_amd64.jar.sha256"
+      
+      # 4. 上传JAR产物（替换原有tar.gz）
       - uses: actions/upload-artifact@v4
         with:
           name: 'windows_amd64'
           path: |
-            jcef_build/windows_amd64.tar.gz
-            jcef_build/windows_amd64.tar.gz.sha256
+            jcef_build/windows_amd64.jar
+            jcef_build/windows_amd64.jar.sha256
           if-no-files-found: error
 
+  # 发布JAR产物到Release
   release-to-github:
     needs: [java-cef-windows-amd64]
     runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')  # 仅Tag推送时发布
     steps:
-      - uses: actions/checkout@v4  # 新增：拉取代码，用于创建Tag
-        with:
-          fetch-depth: 0  # 必须：拉取所有历史，才能创建Tag
-
-      - name: Create temporary tag (手动触发时)
-        if: github.event_name == 'workflow_dispatch'  # 仅手动触发时创建
-        run: |
-          # 创建基于Commit ID的临时Tag（避免重复）
-          TEMP_TAG="temp-$(git rev-parse --short HEAD)-$(date +%Y%m%d%H%M%S)"
-          git tag $TEMP_TAG
-          git push origin $TEMP_TAG
-          echo "TEMP_TAG=$TEMP_TAG" >> $GITHUB_ENV  # 保存Tag名到环境变量
-
-      - name: Download windows-amd64 artifact
+      - name: Download windows-amd64 JAR artifact
         uses: actions/download-artifact@v4
         with:
           name: 'windows_amd64'
 
+      - name: List artifact (调试用)
+        run: |
+          echo "=== 已下载的JAR产物 ==="
+          ls -l
+          echo "======================"
+
       - name: Create and publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TEMP_TAG || github.ref_name }}  # 优先用临时Tag，否则用推送的Tag
+          # 仅上传JAR和对应的sha256校验文件
           files: |
-            windows_amd64.tar.gz
-            windows_amd64.tar.gz.sha256
+            windows_amd64.jar
+            windows_amd64.jar.sha256
+          # Release描述（适配JAR产物）
           body: |
-            ## java-cef (windows-amd64) 自动构建发布
+            ## java-cef (windows-amd64) JAR 包发布
             - 构建Commit: ${{ github.sha }}
             - 构建时间: ${{ github.run_at }}
-            - 支持平台: windows-amd64
+            - 产物类型: JAR 包（包含windows-amd64原生库）
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
