@@ -1,13 +1,13 @@
-name: Build java-cef
+name: Build java-cef and Release
 
 on:
   push:
-    tags:  # 新增：推送v开头的Tag时触发Release（如v1.0.0）
+    tags:  # 推送v开头的Tag时自动发布Release（如v1.0.0）
       - 'v*'
-  workflow_dispatch:  # 保留手动触发能力
-  # 保留原push触发（非Tag推送时仅构建，不发布Release）
+  workflow_dispatch:  # 保留手动触发能力（Actions页面可手动运行）
 
 jobs:
+  # Linux 平台构建
   java-cef-linux:
     runs-on: [ubuntu-24.04]
     strategy:
@@ -36,6 +36,7 @@ jobs:
             jcef_build/linux_${{ matrix.platform }}.tar.gz.sha256
           if-no-files-found: error
 
+  # Windows 平台构建
   java-cef-windows:
     runs-on: [windows-2022]
     strategy:
@@ -65,6 +66,7 @@ jobs:
             jcef_build/windows_${{ matrix.platform }}.tar.gz.sha256
           if-no-files-found: error
 
+  # macOS 平台构建
   java-cef-macos:
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -100,90 +102,37 @@ jobs:
             jcef_build/macos_${{ matrix.platform }}.tar.gz.sha256
           if-no-files-found: error
 
-  check-secret:
-    runs-on: ubuntu-24.04
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')  # 新增：Tag推送时也检查secret
-    steps:
-      - name: Check secret
-        env:
-          API_TOKEN: ${{ secrets.API_TOKEN }}
-        run: |
-          if [ -z "$API_TOKEN" ]; then
-            echo "API_TOKEN is not set. Upload will not proceed."
-            exit 1
-          fi
-          echo "API_TOKEN is set. Upload can proceed."
-
-  upload-to-api:
-    needs: [java-cef-linux, java-cef-windows, java-cef-macos, check-secret]
-    runs-on: ubuntu-24.04
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')  # 新增：Tag推送时也上传API
-    strategy:
-      matrix:
-        platform: [linux_amd64, linux_arm64, windows_amd64, windows_arm64, macos_amd64, macos_arm64]
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.platform }}
-      - name: Upload to LiquidBounce API
-        env:
-          API_TOKEN: ${{ secrets.API_TOKEN }}
-        run: |
-          PLATFORM="${{ matrix.platform }}"
-          
-          response=$(curl -w "\n%{http_code}" -X POST \
-            -H "Authorization: Bearer $API_TOKEN" \
-            -H "Content-Type: application/gzip" \
-            --data-binary "@${PLATFORM}.tar.gz" \
-            "http://nossl.api.liquidbounce.net/api/v3/resource/mcef-cef/${{ github.sha }}/${PLATFORM}")
-          
-          status_code=$(echo "$response" | tail -n1)
-          response_body=$(echo "$response" | sed '$d')
-          
-          echo "Status code: $status_code"
-          echo "Response body: $response_body"
-          
-          if [ "$status_code" -lt 200 ] || [ "$status_code" -ge 300 ]; then
-            echo "Upload failed with status code $status_code"
-            exit 1
-          fi
-
-  # 新增：发布到Release的任务
+  # 核心：发布所有产物到 GitHub Release
   release-to-github:
-    needs: [upload-to-api]  # 依赖API上传完成后再发布
+    needs: [java-cef-linux, java-cef-windows, java-cef-macos]  # 等待所有平台构建完成
     runs-on: ubuntu-24.04
-    if: startsWith(github.ref, 'refs/tags/v')  # 仅Tag推送时触发Release
     steps:
-      - name: Download all artifacts
+      - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts  # 所有产物下载到artifacts目录下
+          path: release_assets  # 所有产物统一下载到release_assets目录
 
-      - name: Prepare release assets
+      - name: List artifacts (调试用，可删除)
         run: |
-          # 整理产物到统一目录，方便上传
-          mkdir release_assets
-          cp artifacts/*/*.tar.gz release_assets/
-          cp artifacts/*/*.sha256 release_assets/
-          # 打印产物列表，确认文件存在
+          echo "=== 已下载的产物列表 ==="
           ls -l release_assets/
+          echo "========================"
 
       - name: Create and publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # 上传所有产物到Release
+          # 上传所有平台的tar.gz和sha256校验文件
           files: |
-            release_assets/*.tar.gz
-            release_assets/*.sha256
-          # Release描述（可自定义）
+            release_assets/**/*.tar.gz
+            release_assets/**/*.sha256
+          # Release 描述（可自定义）
           body: |
             ## java-cef 自动构建发布
             - 构建Commit: ${{ github.sha }}
-            - 构建时间: ${{ github.run_attempt }}
-            - 包含平台: linux_amd64、linux_arm64、windows_amd64、windows_arm64、macos_amd64、macos_arm64
-          # 是否为预发布（false=正式版，true=测试版）
-          prerelease: true
+            - 构建时间: ${{ github.run_at }}
+            - 支持平台: linux_amd64、linux_arm64、windows_amd64、windows_arm64、macos_amd64、macos_arm64
+          # 是否为预发布版本（false=正式版，true=测试版）
+          prerelease: false
         env:
-          # GitHub内置令牌，无需手动配置
+          # GitHub 内置令牌，无需手动配置
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
