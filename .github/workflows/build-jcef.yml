@@ -2,12 +2,11 @@ name: Build java-cef (windows-amd64) and Release
 
 on:
   push:
-    tags:  # 推送v开头的Tag时自动发布Release（如v1.0.0）
+    tags:
       - 'v*'
-  workflow_dispatch:  # 保留手动触发能力（Actions页面可手动运行）
+  workflow_dispatch:
 
 jobs:
-  # 仅保留 windows-amd64 平台构建
   java-cef-windows-amd64:
     runs-on: [windows-2022]
     steps:
@@ -34,36 +33,40 @@ jobs:
             jcef_build/windows_amd64.tar.gz.sha256
           if-no-files-found: error
 
-  # 发布 windows-amd64 产物到 GitHub Release
   release-to-github:
-    needs: [java-cef-windows-amd64]  # 仅等待windows-amd64构建完成
+    needs: [java-cef-windows-amd64]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4  # 新增：拉取代码，用于创建Tag
+        with:
+          fetch-depth: 0  # 必须：拉取所有历史，才能创建Tag
+
+      - name: Create temporary tag (手动触发时)
+        if: github.event_name == 'workflow_dispatch'  # 仅手动触发时创建
+        run: |
+          # 创建基于Commit ID的临时Tag（避免重复）
+          TEMP_TAG="temp-$(git rev-parse --short HEAD)-$(date +%Y%m%d%H%M%S)"
+          git tag $TEMP_TAG
+          git push origin $TEMP_TAG
+          echo "TEMP_TAG=$TEMP_TAG" >> $GITHUB_ENV  # 保存Tag名到环境变量
+
       - name: Download windows-amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: 'windows_amd64'  # 仅下载windows-amd64产物
-
-      - name: List artifact (调试用，可删除)
-        run: |
-          echo "=== 已下载的windows-amd64产物 ==="
-          ls -l
-          echo "================================"
+          name: 'windows_amd64'
 
       - name: Create and publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # 仅上传windows-amd64的产物
+          tag_name: ${{ env.TEMP_TAG || github.ref_name }}  # 优先用临时Tag，否则用推送的Tag
           files: |
             windows_amd64.tar.gz
             windows_amd64.tar.gz.sha256
-          # Release 描述（适配windows-amd64）
           body: |
             ## java-cef (windows-amd64) 自动构建发布
             - 构建Commit: ${{ github.sha }}
             - 构建时间: ${{ github.run_at }}
             - 支持平台: windows-amd64
-          # 是否为预发布版本（false=正式版，true=测试版）
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
