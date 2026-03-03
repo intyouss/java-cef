@@ -2,7 +2,10 @@ name: Build java-cef
 
 on:
   push:
-  workflow_dispatch:
+    tags:  # 新增：推送v开头的Tag时触发Release（如v1.0.0）
+      - 'v*'
+  workflow_dispatch:  # 保留手动触发能力
+  # 保留原push触发（非Tag推送时仅构建，不发布Release）
 
 jobs:
   java-cef-linux:
@@ -96,9 +99,10 @@ jobs:
             jcef_build/macos_${{ matrix.platform }}.tar.gz
             jcef_build/macos_${{ matrix.platform }}.tar.gz.sha256
           if-no-files-found: error
+
   check-secret:
     runs-on: ubuntu-24.04
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')  # 新增：Tag推送时也检查secret
     steps:
       - name: Check secret
         env:
@@ -113,7 +117,7 @@ jobs:
   upload-to-api:
     needs: [java-cef-linux, java-cef-windows, java-cef-macos, check-secret]
     runs-on: ubuntu-24.04
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')  # 新增：Tag推送时也上传API
     strategy:
       matrix:
         platform: [linux_amd64, linux_arm64, windows_amd64, windows_arm64, macos_amd64, macos_arm64]
@@ -144,3 +148,42 @@ jobs:
             echo "Upload failed with status code $status_code"
             exit 1
           fi
+
+  # 新增：发布到Release的任务
+  release-to-github:
+    needs: [upload-to-api]  # 依赖API上传完成后再发布
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')  # 仅Tag推送时触发Release
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts  # 所有产物下载到artifacts目录下
+
+      - name: Prepare release assets
+        run: |
+          # 整理产物到统一目录，方便上传
+          mkdir release_assets
+          cp artifacts/*/*.tar.gz release_assets/
+          cp artifacts/*/*.sha256 release_assets/
+          # 打印产物列表，确认文件存在
+          ls -l release_assets/
+
+      - name: Create and publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 上传所有产物到Release
+          files: |
+            release_assets/*.tar.gz
+            release_assets/*.sha256
+          # Release描述（可自定义）
+          body: |
+            ## java-cef 自动构建发布
+            - 构建Commit: ${{ github.sha }}
+            - 构建时间: ${{ github.run_attempt }}
+            - 包含平台: linux_amd64、linux_arm64、windows_amd64、windows_arm64、macos_amd64、macos_arm64
+          # 是否为预发布（false=正式版，true=测试版）
+          prerelease: true
+        env:
+          # GitHub内置令牌，无需手动配置
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
